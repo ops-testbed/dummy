@@ -1,0 +1,135 @@
+name: Build
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: 'Target environment'
+        required: true
+        type: string
+    outputs:
+      image_uri:
+        description: "Built Docker image URI"
+        value: ${{ jobs.build.outputs.image_uri }}
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Target environment'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_ROLE_ARN: arn:aws:iam::725929716696:role/github-action-build-workflow
+  AWS_ROLE_SESSION_NAME: github-actions-${{ github.run_id }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image_uri: ${{ steps.image-build.outputs.IMAGE_URI }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java 17 설정
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Gradle Caching
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}-17
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Gradle Wrapper 실행 권한 부여
+        run: chmod +x ./gradlew
+
+      - name: Gradle 빌드
+        run: ./gradlew clean build
+
+      - name: Checkout standard-images repository
+        uses: actions/checkout@v4
+        with:
+          repository: ops-testbed/standard-images
+          path: standard-images
+
+      - name: AWS 자격 증명 구성
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: ${{ env.AWS_ROLE_SESSION_NAME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Docker 이미지 빌드, 태그 및 ECR 푸시
+        id: image-build
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ inputs.profile }}/${{ github.event.repository.name }}
+          IMAGE_TAG: ${{ github.sha }}
+          ENVIRONMENT: ${{ inputs.profile }}
+        run: |
+          BUILD_ARGS=""
+          if [ "$ENVIRONMENT" = "live" ]; then
+            BUILD_ARGS="--build-arg SPRING_PROFILES_ACTIVE=live"
+          else 
+            BUILD_ARGS="--build-arg SPRING_PROFILES_ACTIVE=dev"
+          fi
+          
+          IMAGE_URI="$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          
+          docker build -f standard-images/docker/Dockerfile $BUILD_ARGS -t $IMAGE_URI .
+          docker push $IMAGE_URI
+          
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      #      - name: Slack 채널 정보 조회
+      #        id: get-slack-channel
+      #        run: |
+      #          RESPONSE=$(curl -s -X GET \
+      #            -H "Authorization: Bearer ${{ secrets.CMDB_API_TOKEN }}" \
+      #            -H "Content-Type: application/json" \
+      #            "${{ secrets.CMDB_API_URL }}/api/slack-channels?environment=${{ inputs.profile }}&service=${{ github.event.repository.name }}")
+      #
+      #          # JSON 응답에서 채널 ID 추출
+      #          CHANNEL_ID=$(echo "$RESPONSE" | jq -r '.data.slack_channel_id')
+
+      - name: Slack 성공 알림
+        if: success()
+        uses: slackapi/slack-github-action@v1.24.0
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        with:
+          #          channel-id: ${{ steps.get-slack-channel.outputs.CHANNEL_ID }}
+          channel-id: C09HBDKRX3M
+          payload: |
+            {
+              "text": "성공"
+            }
+      - name: Slack 실패 알림
+        if: failure()
+        uses: slackapi/slack-github-action@v1.24.0
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        with:
+          #          channel-id: ${{ steps.get-slack-channel.outputs.CHANNEL_ID }}
+          channel-id: C09HBDKRX3M
+          payload: |
+            {
+              "text": "실패"
+            }
+            
