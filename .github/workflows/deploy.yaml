@@ -1,0 +1,105 @@
+name: Deploy
+on:
+  workflow_call:
+    inputs:
+      profile:
+        description: 'Target environment'
+        required: true
+        type: string
+      image_uri:
+        description: 'ECR image URI to deploy'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'Target environment'
+        required: true
+        type: string
+      image_uri:
+        description: 'ECR image URI to deploy'
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  AWS_ROLE_ARN: arn:aws:iam::725929716696:role/github-action-build-workflow
+  AWS_ROLE_SESSION_NAME: github-actions-deploy-${{ github.run_id }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: AWS 자격 증명 구성
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          role-session-name: ${{ env.AWS_ROLE_SESSION_NAME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: CodeDeploy 배포 패키지 생성
+        run: |
+          cp .github/workflows/deployment/codedeploy/templates/appspec.yml ./appspec.yml
+          cp -r .github/workflows/deployment/codedeploy/scripts ./scripts
+          
+          # 배포 설정 파일 생성 (템플릿에서 변수 치환)
+          sed -e "s|{{IMAGE_URI}}|${{ inputs.image_uri }}|g" \
+              -e "s|{{CONTAINER_NAME}}|${{ github.event.repository.name }}|g" \
+              -e "s|{{AWS_REGION}}|${{ env.AWS_REGION }}|g" \
+              -e "s|{{ENVIRONMENT}}|${{ inputs.profile }}|g" \
+              .github/workflows/deployment/codedeploy/templates/deployment-config.env.template > deployment-config.env
+          
+          # 배포 패키지 압축
+          zip -r deployment-package.zip appspec.yml scripts/ deployment-config.env
+
+      - name: S3에 배포 패키지 업로드
+        run: |
+          S3_BUCKET="${{ github.repository_owner }}-${{ inputs.profile }}-deployment-bucket"
+          S3_KEY="${{ github.event.repository.name }}/${{ github.sha }}/deployment-package.zip"
+          
+          aws s3 cp deployment-package.zip s3://$S3_BUCKET/$S3_KEY
+          
+          echo "S3_BUCKET=$S3_BUCKET" >> $GITHUB_ENV
+          echo "S3_KEY=$S3_KEY" >> $GITHUB_ENV
+
+      - name: CodeDeploy 배포 시작
+        id: codedeploy
+        run: |
+          APPLICATION_NAME="${{ inputs.profile }}-${{ github.event.repository.name }}"
+          DEPLOYMENT_GROUP="${{ inputs.profile }}-${{ github.event.repository.name }}-dg"
+          
+          # 배포 생성
+          DEPLOYMENT_ID=$(aws deploy create-deployment \
+            --application-name $APPLICATION_NAME \
+            --deployment-group-name $DEPLOYMENT_GROUP \
+            --s3-location bucket=$S3_BUCKET,key=$S3_KEY,bundleType=zip \
+            --deployment-config-name CodeDeployDefault.AllAtOnce \
+            --description "GitHub Actions deployment - ${{ github.sha }}" \
+            --query 'deploymentId' \
+            --output text)
+          
+          echo "DEPLOYMENT_ID=$DEPLOYMENT_ID" >> $GITHUB_OUTPUT
+
+      - name: 배포 상태 모니터링
+        run: |
+          DEPLOYMENT_ID="${{ steps.codedeploy.outputs.DEPLOYMENT_ID }}"
+          
+          # 배포 완료까지 대기 (최대 30분)
+          aws deploy wait deployment-successful --deployment-id $DEPLOYMENT_ID
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ 배포 성공!"
+          else
+            echo "❌ 배포 실패"
+            aws deploy get-deployment --deployment-id $DEPLOYMENT_ID \
+              --query 'deploymentInfo.errorInformation' --output table
+            exit 1
+          fi
