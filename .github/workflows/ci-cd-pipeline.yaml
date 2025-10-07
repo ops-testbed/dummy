@@ -1,0 +1,21 @@
+name: CI/CD Pipeline
+on:
+  push:
+    branches: [ develop ]
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yaml
+
+  build:
+    needs: [ test ]
+    uses: ./.github/workflows/build.yaml
+    with:
+      profile: ${{ github.ref == 'refs/heads/develop' && 'dev' || 'live' }}
+
+  deploy:
+    needs: [ build ]
+    uses: ./.github/workflows/deploy.yaml
+    with:
+      profile: ${{ github.ref == 'refs/heads/develop' && 'dev' || 'live' }}
+      image_uri: ${{ needs.build.outputs.image_uri }}
