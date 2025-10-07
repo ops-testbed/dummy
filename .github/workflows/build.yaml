@@ -61,7 +61,7 @@ jobs:
       - name: Checkout standard-images repository
         uses: actions/checkout@v4
         with:
-          repository: yoon-youngjin/standard-images
+          repository: ops-testbed/standard-images
           path: standard-images
 
       - name: AWS 자격 증명 구성
