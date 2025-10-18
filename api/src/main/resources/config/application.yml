@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: dummy
+#  config:
+#    import: optional:configserver:http://localhost:8888
+logging:
+  config: classpath:logback/logback-base.xml
