@@ -39,6 +39,10 @@ subprojects {
     dependencies {
         implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
         implementation("org.jetbrains.kotlin:kotlin-reflect")
+        implementation("com.github.danielwegener:logback-kafka-appender:0.2.0-RC1")
+//        implementation("org.springframework.cloud:spring-cloud-config-client")
+        implementation("io.github.oshai:kotlin-logging-jvm:5.1.1")
+        implementation("net.logstash.logback:logstash-logback-encoder:6.1")
         testImplementation("org.springframework.boot:spring-boot-starter-test")
     }
 
